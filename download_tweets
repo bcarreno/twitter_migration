@@ -1,0 +1,104 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'bundler/setup'
+
+require 'faraday'
+require 'json'
+require 'uri'
+
+class Processor
+  def initialize(username:, filename_prefix:, filename_digits:, bearer_token:)
+    @username = username
+    @filename_prefix = filename_prefix
+    @filename_digits = filename_digits
+    @bearer_token = bearer_token
+  end
+
+  def username
+    @username
+  end
+
+  def filename_prefix
+    @filename_prefix
+  end
+
+  def filename_digits
+    @filename_digits
+  end
+
+  def bearer_token
+    @bearer_token
+  end
+
+  def userid
+    return @userid unless @userid.nil?
+    endpoint = "https://api.twitter.com/2/users/by/username/:username"
+    request_url = endpoint.gsub(':username', username)
+    response = execute_http_request(request_url)
+    response['data']['id']
+  end
+
+  def numbered_filename(number)
+    filename_prefix + sprintf("%0#{filename_digits}d", number)
+  end
+
+  def execute_http_request(url, query_params=nil)
+    headers = {
+      "User-Agent" => "v2RubyExampleCode",
+      "Authorization" => "Bearer #{bearer_token}"
+    }
+    response = Faraday.get(url, query_params, headers)
+    if response.status != 200
+      abort "Bad response '#{response.status}', from #{url}\nResponse Body: #{response.body}"
+    end
+    JSON.parse(response.body)
+  end
+
+  def download_tweets
+    page = 1
+    pagination_token = nil
+    tweets_total_count = 0
+    loop do
+      tweets = get_tweets_chunk(pagination_token)
+      tweets_count = tweets["meta"]["result_count"]
+      tweets_total_count += tweets_count
+      filename = "#{numbered_filename(page)}.json"
+      puts "downloading #{tweets_count} tweets to #{filename} (#{tweets_total_count} total) " +
+           "newest: #{tweets["data"].map{|x| x["created_at"]}[0][0, 10]}, " +
+           "oldest: #{tweets["data"].map{|x| x["created_at"]}[-1][0, 10]}"
+      File.open(filename, 'w') {|f| f.write(JSON.pretty_generate(tweets))}
+      break if (pagination_token = tweets["meta"]["next_token"]).nil?
+      page += 1
+    end
+  end
+
+  # API documentation
+  # https://developer.twitter.com/en/docs/twitter-api/tweets/timelines/api-reference/get-users-id-reverse-chronological
+  def get_tweets_chunk(pagination_token)
+    endpoint = "https://api.twitter.com/2/users/:id/tweets"
+    request_url = endpoint.gsub(':id', userid)
+    query_params = {
+      "max_results" => 100,
+      "expansions" => "attachments.poll_ids,attachments.media_keys,author_id",
+      "tweet.fields" => "attachments,author_id,conversation_id,created_at,entities,id,lang",
+      "user.fields" => "description",
+      "media.fields" => "url",
+    }
+    query_params.merge!("pagination_token" => pagination_token) unless pagination_token.nil?
+    execute_http_request(request_url, query_params)
+  end
+end
+
+#
+# main
+#
+
+if ARGV.count < 1
+  abort "Usage: #{__FILE__} username"
+end
+if ENV["BEARER_TOKEN"].to_s.length < 1
+  abort "environment variable BEARER_TOKEN must be defined https://developer.twitter.com/en/docs/authentication/overview"
+end
+
+Processor.new(username: ARGV[0], filename_prefix: "tweets_", filename_digits: 3, bearer_token: ENV["BEARER_TOKEN"]).download_tweets
