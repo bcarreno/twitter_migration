@@ -15,37 +15,31 @@ class Processor
     @filename_digits = filename_digits
   end
 
-  def filename_prefix
-    @filename_prefix
+  def download_file(url, filename)
+    puts "downloading #{url} to file #{filename}"
+    response = Faraday.get(url)
+    if response.status != 200
+      abort "Bad response '#{response.status}', downloading file from #{url}\nResponse Body: #{response.body}"
+    end
+    File.open(filename, 'wb') { |f| f.write(response.body) }
   end
 
-  def filename_digits
-    @filename_digits
+  def expand_short_url(url)
+    loop do
+      response = Faraday.get(url)
+      if (300..309).include?(response.status) && response.headers['location'].to_s.length > 0
+        url = response.headers['location']
+      else
+        break
+      end
+      break unless short_url_pattern =~ url
+    end
+    url
   end
 
-  def username
-    return @username unless @username.nil?
-    JSON.parse(File.read(json_files_list[0]))['includes']['users'][0]['username']
-  end
-
-  def json_files_list
-    Dir[filename_prefix + '*.json']
-  end
-
-  def html_coder
-    @html_coder ||= HTMLEntities.new
-  end
-
-  def process_json_files
-    json_files = json_files_list
-    puts "found #{json_files.count} json files"
-    json_files.each_with_index do |filename_json, i|
-      prev_page = i == 0 ? nil : i
-      current_page = i + 1
-      next_page = i == json_files.count - 1 ? nil : i + 2
-      basename = File.basename(filename_json, ".json")
-      puts "processing #{filename_json}"
-      process_json_file(basename, prev_page, current_page, next_page)
+  def expand_short_urls(text)
+    text.gsub(short_url_pattern) do |short_url|
+      expand_short_url(short_url)
     end
   end
 
@@ -57,6 +51,51 @@ class Processor
     return media
     abort "non photo found for #{media_key}: #{media.inspect}" if media && media['type'] != 'photo'
     media && media['url']
+  end
+
+  def filename_digits
+    @filename_digits
+  end
+
+  def filename_prefix
+    @filename_prefix
+  end
+
+  def generate_html_for_tweet(fd, tweet)
+    tweet['created_at'] = DateTime.parse(tweet['created_at']).strftime('%b %-d, %Y')
+    tweet['text'] = expand_short_urls(tweet['text'])
+    tweet['text'] = remove_my_twitter_urls(tweet['text'])
+    tweet['text'] = remove_yfrog_urls(tweet['text'])
+    tweet['text'] = html_coder.encode(tweet['text'], :named)
+
+    fd.puts "<div class='date'>#{tweet['created_at']}</div>"
+    fd.puts "<p>#{insert_anchor_tags(tweet['text'])}</p>"
+  end
+
+  def generate_html_and_download_media(fd, base_filename, media, alt_text)
+    if media.nil?
+      fd.puts '<p>no match under ["includes"] element</p>'
+      return
+    end
+    if media['url'].nil? || media['type'] != 'photo'
+      # do not know how to handle media other than pictures
+      return
+    end
+    media_filename = File.basename(URI.parse(media['url']).path)
+    full_path = "#{base_filename}/#{media_filename}"
+    download_file(media['url'], full_path) unless File.file?(full_path)
+
+    fd.puts "<img src='#{full_path}' alt='#{alt_text}'>"
+  end
+
+  def generate_pagination_html(prev_page, current_page, next_page)
+    prev_html = "<a href='#{numbered_filename(prev_page)}.html'>prev</a>" unless prev_page.nil?
+    next_html = "<a href='#{numbered_filename(next_page)}.html'>next</a>" unless next_page.nil?
+    "<div class='pagination'>#{prev_html} #{current_page} #{next_html}</div>"
+  end
+
+  def html_coder
+    @html_coder ||= HTMLEntities.new
   end
 
   def html_header
@@ -93,85 +132,16 @@ class Processor
     EOT
   end
 
-  def short_url_pattern
-    %r(https?://(t.co|bit.ly|tinyurl.com)/\w{4,})
-  end
-
-  def expand_short_url(url)
-    loop do
-      response = Faraday.get(url)
-      if (300..309).include?(response.status) && response.headers['location'].to_s.length > 0
-        url = response.headers['location']
-      else
-        break
-      end
-      break unless short_url_pattern =~ url
-    end
-    url
-  end
-
-  def expand_short_urls(text)
-    text.gsub(short_url_pattern) do |short_url|
-      expand_short_url(short_url)
-    end
-  end
-
-  def remove_yfrog_urls(text)
-    text.gsub(%r(https?://yfrog.com/\w{6,}), '')
-  end
-
-  def remove_my_twitter_urls(text)
-    text.gsub(%r(https?://twitter.com/#{username}/status/\d+/photo/\d+), '')
-  end
-
   def insert_anchor_tags(text)
     text.gsub(%r{(https?://[^\s]+)}, '<a href="\1">\1</a>')
   end
 
+  def json_files_list
+    Dir[filename_prefix + '*.json']
+  end
+
   def numbered_filename(number)
     filename_prefix + sprintf("%0#{filename_digits}d", number)
-  end
-
-  def generate_pagination_html(prev_page, current_page, next_page)
-    prev_html = "<a href='#{numbered_filename(prev_page)}.html'>prev</a>" unless prev_page.nil?
-    next_html = "<a href='#{numbered_filename(next_page)}.html'>next</a>" unless next_page.nil?
-    "<div class='pagination'>#{prev_html} #{current_page} #{next_html}</div>"
-  end
-
-  def generate_html_for_tweet(fd, tweet)
-    tweet['created_at'] = DateTime.parse(tweet['created_at']).strftime('%b %-d, %Y')
-    tweet['text'] = expand_short_urls(tweet['text'])
-    tweet['text'] = remove_my_twitter_urls(tweet['text'])
-    tweet['text'] = remove_yfrog_urls(tweet['text'])
-    tweet['text'] = html_coder.encode(tweet['text'], :named)
-
-    fd.puts "<div class='date'>#{tweet['created_at']}</div>"
-    fd.puts "<p>#{insert_anchor_tags(tweet['text'])}</p>"
-  end
-
-  def generate_html_and_download_media(fd, base_filename, media, alt_text)
-    if media.nil?
-      fd.puts '<p>no match under ["includes"] element</p>'
-      return
-    end
-    if media['url'].nil? || media['type'] != 'photo'
-      # do not know how to handle media other than pictures
-      return
-    end
-    media_filename = File.basename(URI.parse(media['url']).path)
-    full_path = "#{base_filename}/#{media_filename}"
-    download_file(media['url'], full_path) unless File.file?(full_path)
-
-    fd.puts "<img src='#{full_path}' alt='#{alt_text}'>"
-  end
-
-  def download_file(url, filename)
-    puts "downloading #{url} to file #{filename}"
-    response = Faraday.get(url)
-    if response.status != 200
-      abort "Bad response '#{response.status}', downloading file from #{url}\nResponse Body: #{response.body}"
-    end
-    File.open(filename, 'wb') { |f| f.write(response.body) }
   end
 
   def process_json_file(base_filename, prev_page, current_page, next_page)
@@ -190,6 +160,36 @@ class Processor
       f.puts generate_pagination_html(prev_page, current_page, next_page)
       f.write html_footer
     end
+  end
+
+  def process_json_files
+    json_files = json_files_list
+    puts "found #{json_files.count} json files"
+    json_files.each_with_index do |filename_json, i|
+      prev_page = i == 0 ? nil : i
+      current_page = i + 1
+      next_page = i == json_files.count - 1 ? nil : i + 2
+      basename = File.basename(filename_json, ".json")
+      puts "processing #{filename_json}"
+      process_json_file(basename, prev_page, current_page, next_page)
+    end
+  end
+
+  def remove_yfrog_urls(text)
+    text.gsub(%r(https?://yfrog.com/\w{6,}), '')
+  end
+
+  def remove_my_twitter_urls(text)
+    text.gsub(%r(https?://twitter.com/#{username}/status/\d+/photo/\d+), '')
+  end
+
+  def short_url_pattern
+    %r(https?://(t.co|bit.ly|tinyurl.com)/\w{4,})
+  end
+
+  def username
+    return @username unless @username.nil?
+    JSON.parse(File.read(json_files_list[0]))['includes']['users'][0]['username']
   end
 end
 

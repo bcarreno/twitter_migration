@@ -15,44 +15,8 @@ class Processor
     @bearer_token = bearer_token
   end
 
-  def username
-    @username
-  end
-
-  def filename_prefix
-    @filename_prefix
-  end
-
-  def filename_digits
-    @filename_digits
-  end
-
   def bearer_token
     @bearer_token
-  end
-
-  def userid
-    return @userid unless @userid.nil?
-    endpoint = "https://api.twitter.com/2/users/by/username/:username"
-    request_url = endpoint.gsub(':username', username)
-    response = execute_http_request(request_url)
-    response['data']['id']
-  end
-
-  def numbered_filename(number)
-    filename_prefix + sprintf("%0#{filename_digits}d", number)
-  end
-
-  def execute_http_request(url, query_params=nil)
-    headers = {
-      "User-Agent" => "v2RubyExampleCode",
-      "Authorization" => "Bearer #{bearer_token}"
-    }
-    response = Faraday.get(url, query_params, headers)
-    if response.status != 200
-      abort "Bad response '#{response.status}', from #{url}\nResponse Body: #{response.body}"
-    end
-    JSON.parse(response.body)
   end
 
   def download_tweets
@@ -87,6 +51,42 @@ class Processor
     }
     query_params.merge!("pagination_token" => pagination_token) unless pagination_token.nil?
     execute_http_request(request_url, query_params)
+  end
+
+  def execute_http_request(url, query_params=nil)
+    headers = {
+      "User-Agent" => "v2RubyExampleCode",
+      "Authorization" => "Bearer #{bearer_token}"
+    }
+    response = Faraday.get(url, query_params, headers)
+    if response.status != 200
+      abort "Bad response '#{response.status}', from #{url}\nResponse Body: #{response.body}"
+    end
+    JSON.parse(response.body)
+  end
+
+  def filename_digits
+    @filename_digits
+  end
+
+  def filename_prefix
+    @filename_prefix
+  end
+
+  def numbered_filename(number)
+    filename_prefix + sprintf("%0#{filename_digits}d", number)
+  end
+
+  def userid
+    return @userid unless @userid.nil?
+    endpoint = "https://api.twitter.com/2/users/by/username/:username"
+    request_url = endpoint.gsub(':username', username)
+    response = execute_http_request(request_url)
+    response['data']['id']
+  end
+
+  def username
+    @username
   end
 end
 
