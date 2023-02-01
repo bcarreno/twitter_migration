@@ -82,6 +82,9 @@ class Processor
     endpoint = "https://api.twitter.com/2/users/by/username/:username"
     request_url = endpoint.gsub(':username', username)
     response = execute_http_request(request_url)
+    if response['data'].nil?
+      abort "User #{username} not found"
+    end
     response['data']['id']
   end
 
